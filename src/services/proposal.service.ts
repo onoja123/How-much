@@ -24,27 +24,49 @@ export default class ProposalService {
     const user = await User.findById(userId);
     if (!user) throw new Error("User not found");
 
-    const prompt = this.createInvoicePrompt(user, proposalDetails);
-    const openaiResponse = await this.openai.chat.completions.create({
+    // 1) Invoice
+    const invoicePrompt = this.createInvoicePrompt(user, proposalDetails);
+    const invoiceResp = await this.openai.chat.completions.create({
       model: "gpt-4",
-      messages: [{ role: "system", content: "You are a helpful AI assistant." }, { role: "user", content: prompt }],
-      max_tokens: 700,
+      messages: [{role:"system",content:"You are a helpful AI assistant."}, {role:"user",content:invoicePrompt}],
+      max_tokens:700,
     });
+    const invoice = invoiceResp.choices[0]?.message?.content?.trim() || "";
 
-    const invoice = openaiResponse.choices[0]?.message?.content?.trim() || "";
+    // 2) Scope Breakdown
+    const scopePrompt = this.createScopePrompt(user, proposalDetails);
+    const scopeResp = await this.openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [{role:"user",content:scopePrompt}],
+      max_tokens:300,
+    });
+    const projectScopeBreakdown = scopeResp.choices[0]?.message?.content?.trim() || "";
+
+    // 3) Demo Pitch
+    const pitchPrompt = this.createPitchPrompt(user, proposalDetails);
+    const pitchResp = await this.openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [{role:"user",content:pitchPrompt}],
+      max_tokens:150,
+    });
+    const demoPitch = pitchResp.choices[0]?.message?.content?.trim() || "";
+
+    // pricing
     const proposalRange = this.calculatePricingRange(user, proposalDetails);
 
+    // save
     const proposal = new Proposal({
       ...proposalDetails,
       _user: userId,
       priceRange: proposalRange,
       generatedInvoice: invoice,
+      projectScopeBreakdown,
+      demoPitch,
       createdAt: new Date(),
     });
-
     await proposal.save();
 
-    return { invoice, proposal };
+    return { invoice, projectScopeBreakdown, demoPitch, proposal };
   }
 
   async deleteProposal(
@@ -54,8 +76,15 @@ export default class ProposalService {
       return proposalService;
   }
 
-  private createInvoicePrompt(user: any, proposalDetails: IProposal): string {
-    const developerDetails = `
+  private createInvoicePrompt(user: any, d: IProposal): string {
+    const clientLine = d.clientName
+      ? `- Client: ${d.clientName}`
+      : d.companyName
+        ? `- Company: ${d.companyName}`
+        : "";
+    return `
+      Generate a detailed invoice for the following project with a suggested pricing range:
+      ${clientLine}
       Developer Details:
         - Name: ${user.firstname}
         - Title: ${user.developerTitle}
@@ -64,28 +93,48 @@ export default class ProposalService {
         ${user.certifications ? `- Certifications: ${user.certifications.join(", ")}` : ""}
         ${user.portfolioLink ? `- Portfolio: ${user.portfolioLink}` : ""}
         ${user.cvLink ? `- CV: ${user.cvLink}` : ""}
-    `;
-
-    const projectDetails = `
+  
       Project Details:
-        - Description: ${proposalDetails.projectDescription}
-        - Timeline: ${proposalDetails.requiredTimeline}
-        ${proposalDetails.companySize ? `- Company Size: ${proposalDetails.companySize}` : ""}
-        ${proposalDetails.approxNumberOfScreens ? `- Approx. Screens: ${proposalDetails.approxNumberOfScreens}` : ""}
-        - Currency: ${proposalDetails.currency}
-        ${proposalDetails.estimatedCost ? `- Estimated Cost: ${proposalDetails.estimatedCost}` : ""}
+        - Description: ${d.projectDescription}
+        - Timeline: ${d.requiredTimeline}
+        ${d.companySize ? `- Company Size: ${d.companySize}` : ""}
+        ${d.approxNumberOfScreens ? `- Approx. Screens: ${d.approxNumberOfScreens}` : ""}
+        - Currency: ${d.currency}
+        ${d.estimatedCost ? `- Estimated Cost: ${d.estimatedCost}` : ""}
     `;
-
-    const prompt = `
-      Generate a detailed invoice for the following project with a suggested pricing range:
-      ${developerDetails}
-      ${projectDetails}
-      Please format the invoice neatly and provide a pricing range based on the developer's experience and project complexity.
-    `;
-
-    return prompt;
   }
-
+  
+  private createScopePrompt(user: any, d: IProposal): string {
+    const clientLine = d.clientName
+      ? `Client: ${d.clientName}`
+      : d.companyName
+        ? `Company: ${d.companyName}`
+        : "";
+    return `
+      Based on the following project and developer info, break the project into a clear scope outline:
+      ${clientLine}
+      Developer: ${user.firstname}, ${user.developerTitle}, ${user.yearsOfExperience} yrs exp
+      Project: ${d.projectDescription}
+      Timeline: ${d.requiredTimeline}
+  
+      Provide 5–7 bullet points describing discrete deliverables or phases.
+    `;
+  }
+  
+  private createPitchPrompt(user: any, d: IProposal): string {
+    const clientLine = d.clientName
+      ? `for ${d.clientName}`
+      : d.companyName
+        ? `for ${d.companyName}`
+        : "";
+    return `
+      You’re a sales engineer. Write a concise (2–3 sentence) demo pitch ${clientLine},
+      selling the project’s value to the client, incorporating the developer’s background:
+      Developer: ${user.firstname}, ${user.developerTitle}, ${user.yearsOfExperience} yrs.
+      Project: ${d.projectDescription}.
+    `;
+  }
+  
   private calculatePricingRange(user: any, proposalDetails: IProposal): string {
     const complexityMultiplier = 1.2;
     const baseRate = user.yearsOfExperience * 50;
@@ -93,5 +142,4 @@ export default class ProposalService {
     const maxPrice = minPrice * 1.3;
     return `${proposalDetails.currency} ${minPrice.toFixed(2)} - ${maxPrice.toFixed(2)}`;
   }
-
 }

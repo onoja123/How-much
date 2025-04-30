@@ -6,6 +6,8 @@ export interface IProposal extends Document {
     projectDescription: string;
     title: string;
     requiredTimeline: string;
+    clientName?: string;
+    companyName?: string;
     // advancedFeatures: string[];
     companySize?: string;
     approxNumberOfScreens?: number;
